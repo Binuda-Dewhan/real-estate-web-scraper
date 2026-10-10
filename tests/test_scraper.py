@@ -1,3 +1,4 @@
+import json
 import pytest
 from app.scraper.zillow import ZillowScraper
 from unittest.mock import MagicMock, patch
@@ -27,34 +28,79 @@ def test_scraper_search_mocked(mock_sync_playwright):
     mock_page.title.return_value = "Real Estate & Homes For Sale"
     mock_page.url = "https://www.zillow.com/homes/Atlanta,-GA_rb/"
     
-    # Mock Next Data script finding
+    # Build __NEXT_DATA__ with 2 full listResults items
+    # (new architecture: all data extracted from search page, no detail page visits)
+    next_data = {
+        "props": {
+            "pageProps": {
+                "searchPageState": {
+                    "cat1": {
+                        "searchResults": {
+                            "listResults": [
+                                {
+                                    "zpid": "111111",
+                                    "detailUrl": "/homedetails/1_zpid/",
+                                    "addressStreet": "100 Peachtree St",
+                                    "addressCity": "Atlanta",
+                                    "addressState": "GA",
+                                    "addressZipcode": "30303",
+                                    "price": "$500,000",
+                                    "beds": 3,
+                                    "baths": 2,
+                                    "area": 1800,
+                                    "homeType": "SINGLE_FAMILY",
+                                    "statusType": "FOR_SALE",
+                                    "imgSrc": "http://img1.url"
+                                },
+                                {
+                                    "zpid": "222222",
+                                    "detailUrl": "/homedetails/2_zpid/",
+                                    "addressStreet": "200 Buckhead Ave",
+                                    "addressCity": "Atlanta",
+                                    "addressState": "GA",
+                                    "addressZipcode": "30305",
+                                    "price": "$750,000",
+                                    "beds": 4,
+                                    "baths": 3,
+                                    "area": 2500,
+                                    "homeType": "SINGLE_FAMILY",
+                                    "statusType": "FOR_SALE",
+                                    "imgSrc": "http://img2.url"
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     mock_locator = MagicMock()
     mock_locator.count.return_value = 1
     mock_locator.is_visible.return_value = False
-    # Returns 2 URLs
-    mock_locator.inner_text.return_value = '{"props": {"pageProps": {"searchPageState": {"cat1": {"searchResults": {"listResults": [{"detailUrl": "/homedetails/1_zpid/"}, {"detailUrl": "/homedetails/2_zpid/"}]}}}}}}'
+    mock_locator.inner_text.return_value = json.dumps(next_data)
     mock_page.locator.return_value = mock_locator
 
     scraper = ZillowScraper(headless=True)
     scraper.setup()
     
-    # Patch extract_property_details to isolate failure and avoid complex nested mock
-    with patch.object(scraper, 'extract_property_details') as mock_extract:
-        mock_extract.side_effect = [{"property_id": "1"}, {"property_id": "2"}]
-        
-        results = scraper.search("Atlanta, GA", max_listings=2)
-        
-        assert mock_page.goto.called
-        assert len(results) == 2
-        assert mock_extract.call_count == 2
-        
-        # Test Checkpointing
-        assert os.path.exists(scraper.checkpoint_file)
+    results = scraper.search("Atlanta, GA", max_listings=2)
+    
+    assert mock_page.goto.called
+    assert len(results) == 2
+    assert results[0]["source_property_id"] == "111111"
+    assert results[1]["source_property_id"] == "222222"
+    assert results[0]["bedrooms_raw"] == "3"
+    assert results[1]["sqft_raw"] == "2500"
+    
+    # Test Checkpointing
+    assert os.path.exists(scraper.checkpoint_file)
     
     scraper.teardown()
     
     if os.path.exists(scraper.checkpoint_file):
         os.remove(scraper.checkpoint_file)
+
 
 @patch('app.scraper.zillow.sync_playwright')
 def test_extract_property_details_json_ld(mock_sync_playwright):
