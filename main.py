@@ -41,8 +41,12 @@ def run_pipeline(raw_data: list, session):
     logger.info("Starting processing pipeline")
     repo = PropertyRepository(session)
     pipeline = ProcessingPipeline(repo)
-    success = pipeline.process_raw_listings(raw_data)
-    logger.info(f"Pipeline finished. Processed {success} listings.")
+    result = pipeline.process_raw_listings(raw_data)
+    logger.info(
+        f"Pipeline finished. Successfully saved {result.processed_count}/{result.total_raw} listings. "
+        f"Skipped/failed: {result.failed_count}"
+    )
+    return result
 
 def run_exports(db_path: str):
     logger.info("Running market analysis and generating exports")
@@ -64,7 +68,11 @@ def main():
     parser.add_argument("--scrape", action="store_true", help="Run the Zillow scraper")
     parser.add_argument("--location", type=str, default="Austin, TX", help="Location to scrape")
     parser.add_argument("--max-listings", type=int, default=10, help="Maximum number of listings to scrape")
-    parser.add_argument("--visible", action="store_true", help="Run scraper in non-headless mode (visible browser)")
+    parser.add_argument(
+        "--visible", 
+        action="store_true", 
+        help="Run scraper in non-headless mode (visible browser window for debugging navigation or observing access checks)"
+    )
     parser.add_argument("--analyze", action="store_true", help="Run analysis and generate exports")
     
     args = parser.parse_args()
@@ -84,7 +92,8 @@ def main():
                 headless=not args.visible
             )
             if raw_data:
-                run_pipeline(raw_data, session)
+                result = run_pipeline(raw_data, session)
+                logger.info(f"Processing complete: {result.processed_count} saved, {result.failed_count} failed.")
             else:
                 logger.warning("No data returned from scraper.")
                 
@@ -94,7 +103,10 @@ def main():
     except Exception as e:
         logger.error(f"Fatal error: {e}")
     finally:
+        bind_engine = session.get_bind()
         session.close()
+        if bind_engine:
+            bind_engine.dispose()
 
 if __name__ == "__main__":
     main()

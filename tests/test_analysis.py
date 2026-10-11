@@ -135,14 +135,52 @@ def test_price_history(test_db_path):
     
     history = engine.calculate_price_history()
     
+    # Property 3 has multiple observations
     prop_3 = history[history['property_id'] == 'ZILLOW-3'].iloc[0]
-    
     assert prop_3['current_price'] == 390000.0
     assert prop_3['previous_price'] == 400000.0
     assert prop_3['total_change'] == -10000.0
     assert prop_3['percentage_change'] == -2.5
     assert prop_3['highest_price'] == 400000.0
     assert prop_3['price_changes'] == 1
+
+    # Property 1 has only a single observation: delta should be None (insufficient history)
+    prop_1 = history[history['property_id'] == 'ZILLOW-1'].iloc[0]
+    assert prop_1['current_price'] == 500000.0
+    assert prop_1['previous_price'] is None or pd.isna(prop_1['previous_price'])
+    assert prop_1['total_change'] is None or pd.isna(prop_1['total_change'])
+    assert prop_1['percentage_change'] is None or pd.isna(prop_1['percentage_change'])
+    assert prop_1['price_changes'] == 0
+
+def test_compare_properties_latest_observation(test_db_path):
+    engine = AnalysisEngine(test_db_path)
+    engine.load_data()
+    
+    current_df = engine.compare_properties()
+    # Ensure each property appears exactly once for market distribution
+    assert len(current_df) == 3
+    assert len(current_df['property_id'].unique()) == 3
+    # ZILLOW-3 has 2 observations ($400,000 then $390,000), verify latest price ($390,000) is used
+    prop_3 = current_df[current_df['property_id'] == 'ZILLOW-3'].iloc[0]
+    assert prop_3['price'] == 390000.0
+
+def test_build_price_history_view_insufficient_history(test_db_path):
+    from app_ui import build_price_history_view
+    engine = AnalysisEngine(test_db_path)
+    engine.load_data()
+    
+    hist_view = build_price_history_view(engine)
+    assert not hist_view.empty
+    
+    # Single observation property should show 'Insufficient History'
+    prop_1 = hist_view[hist_view['Current Price'] == '$500,000'].iloc[0]
+    assert prop_1['% Change'] == "Insufficient History"
+    assert prop_1['Total Change'] == "N/A"
+    
+    # Multi observation property should show calculated change
+    prop_3 = hist_view[hist_view['Current Price'] == '$390,000'].iloc[0]
+    assert prop_3['% Change'] == "-2.5%"
+    assert prop_3['Total Change'] == "-$10,000"
 
 def test_status_changes(test_db_path):
     engine = AnalysisEngine(test_db_path)

@@ -120,8 +120,13 @@ class AnalysisEngine:
             current_price = prices[-1]
             previous_price = prices[-2] if len(prices) > 1 else None
             
-            total_change = current_price - prices[0] if len(prices) > 0 else 0
-            change_pct = (total_change / prices[0] * 100) if len(prices) > 0 and prices[0] > 0 else 0
+            # If a property has only one valid observation, history is insufficient to calculate a price change
+            if len(prices) > 1 and prices[0] is not None and prices[0] > 0:
+                total_change = current_price - prices[0]
+                change_pct = round((total_change / prices[0] * 100), 2)
+            else:
+                total_change = None
+                change_pct = None
             
             return pd.Series({
                 'current_price': current_price,
@@ -200,8 +205,8 @@ class AnalysisEngine:
             insights["highest_avg_price_zip"] = f"{highest_zip['zip_code']} (${highest_zip['average_price']:,.2f})"
             insights["lowest_avg_price_zip"] = f"{lowest_zip['zip_code']} (${lowest_zip['average_price']:,.2f})"
             
-        if not history_stats.empty:
-            reductions = history_stats[history_stats['total_change'] < 0]
+        if not history_stats.empty and 'total_change' in history_stats.columns:
+            reductions = history_stats[history_stats['total_change'].notnull() & (history_stats['total_change'] < 0)]
             if not reductions.empty:
                 max_reduction = reductions.loc[reductions['total_change'].idxmin()]
                 insights["largest_price_reduction"] = f"Property {max_reduction['property_id']} dropped by ${abs(max_reduction['total_change']):,.2f}"

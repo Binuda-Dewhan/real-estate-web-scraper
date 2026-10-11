@@ -102,7 +102,7 @@ class DataExporter:
                 self._remove_tz(history)
                 history.to_excel(writer, sheet_name="Price History", index=False)
                 
-                reductions = history[history['total_change'] < 0]
+                reductions = history[history['total_change'].notnull() & (history['total_change'] < 0)]
                 if not reductions.empty:
                     reductions.to_excel(writer, sheet_name="Price Reductions", index=False)
                     

@@ -10,7 +10,7 @@
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](#)
 
 > **Enterprise-grade property data extraction, historical price tracking, micro-market intelligence, and reporting platform.**  
-> Built with robust anti-bot mitigation, strict two-tier data validation, time-series ledgering, and a high-performance interactive Streamlit dashboard.
+> Built with responsible data collection practices, strict two-tier data validation, time-series ledgering, and a high-performance interactive Streamlit dashboard.
 
 ---
 
@@ -161,14 +161,14 @@ erDiagram
 
 ---
 
-### Ingestion & Anti-Bot Strategy
+### Ingestion & Responsible Access Handling
 
-Modern real estate portals implement sophisticated anti-scraping protections (Cloudflare, PerimeterX, WAF fingerprinting). The scraper was specifically engineered to bypass conventional scraping failure points:
+Public real estate portals frequently implement rate controls and access verification prompts. The scraper is built with responsible, defensive engineering practices:
 
-- **Search-Page Level Ingestion via `__NEXT_DATA__`**: Rather than scraping the search page and visiting each property detail URL individually—which triggers rapid 403 HTTP blocks and CAPTCHA rate limits—the scraper extracts the hydrated Next.js JSON state directly from the search results page. A single page request yields up to 40 rich listings.
-- **Headful/Visible Browser Support**: High-security portals immediately detect and challenge headless browser fingerprints. The scraper includes a visible browser toggle (`--visible` or UI checkbox) that renders full browser headers, native viewport rendering, and standard client window interactions.
+- **Search-Page Level Ingestion via `__NEXT_DATA__`**: Rather than scraping the search page and visiting each property detail URL individually—which generates excessive network requests and triggers rate limits—the scraper extracts the hydrated Next.js JSON state directly from the search results page. A single page request yields up to 40 rich listings.
+- **Visible Browser Mode for Debugging**: The scraper includes a visible browser toggle (`--visible` or UI checkbox). This is a diagnostic and debugging feature that allows developers to visually inspect page navigation, view rendered elements, and observe whether verification challenges or access restrictions are presented.
 - **Stateful Checkpointing**: Execution state is maintained in `data/scrape_checkpoint.json`. If a search session is interrupted or encounters rate throttling, subsequent executions can resume from the last indexed page.
-- **Graceful Fault Isolation**: If an anti-bot challenge occurs, the scraper halts without data corruption, logs a diagnostic warning, persists all collected listings up to that moment, and exits cleanly.
+- **Graceful Handling of Access Restrictions**: The scraper does not attempt to circumvent CAPTCHAs or security controls. If an access restriction or verification challenge is encountered, the scraper logs a clear diagnostic message, cleanly commits all data gathered up to that point, and terminates gracefully.
 
 ---
 
@@ -360,7 +360,7 @@ streamlit run app_ui.py
 - Opens automatically at `http://localhost:8501`.
 - Enter your desired search market (e.g., `"Austin, TX"`, `"Seattle, WA"`, or `"Miami, FL"`).
 - Select your target listing count.
-- Keep **Headless Browser (Hidden)** unchecked for optimal bypass of portal security checks.
+- Keep **Headless Browser (Hidden)** unchecked if you wish to observe page navigation visually for debugging.
 - Click **▶ Run Scraper** to execute the pipeline and explore results instantly.
 
 ---
@@ -370,7 +370,7 @@ The system can also be executed programmatically or scheduled via cron using `ma
 
 #### Scrape Listings Only
 ```bash
-# Scrape Austin, TX with visible browser (recommended)
+# Scrape Austin, TX with visible browser for visual debugging
 python main.py --scrape --location "Austin, TX" --max-listings 20 --visible
 
 # Scrape in headless mode (background automation)
@@ -394,7 +394,7 @@ python main.py --scrape --location "Denver, CO" --max-listings 30 --visible --an
 | `--scrape` | Flag | `False` | Triggers the Playwright ingestion pipeline. |
 | `--location` | String | `"Austin, TX"` | Target market (City, State or ZIP code). |
 | `--max-listings` | Integer | `10` | Maximum number of listings to extract. |
-| `--visible` | Flag | `False` | Runs browser with visible GUI (recommended for portal compliance). |
+| `--visible` | Flag | `False` | Runs browser with visible GUI for visual debugging and navigation observation. |
 | `--analyze` | Flag | `False` | Computes market metrics and generates all export files. |
 
 ---
@@ -447,7 +447,7 @@ tests/test_scraper.py
 
 ---
 
-## 🛡️ Engineering Guidelines & Anti-Bot Philosophy
+## 🛡️ Engineering Guidelines & Responsible Scraping Philosophy
 
 > [!IMPORTANT]
 > **Responsible & Sustainable Scraping Practices**
@@ -455,7 +455,7 @@ tests/test_scraper.py
 > - **Publicly Rendered Data Only**: The pipeline exclusively accesses publicly delivered HTML and client-side `__NEXT_DATA__` JSON hydration tags delivered to regular web users.
 > - **Search-Page Extraction**: By parsing all property attributes from search result payloads, the platform minimizes HTTP traffic by orders of magnitude compared to traditional detail-page scrapers.
 > - **Polite Pacing**: Built-in pacing delays simulate human-like navigation behavior and avoid burdening public infrastructure.
-> - **Visible Execution Support**: Cloudflare and PerimeterX bot detection can flag headless Chromium. Operating with visible browsers (`--visible` or leaving Headless unchecked in Streamlit) ensures maximum reliability.
+> - **Visible Browser for Debugging**: Visible browser mode (`--visible` or leaving Headless unchecked in Streamlit) is provided as a debugging aid to visually inspect rendered pages and monitor access verification challenges without attempting circumvention.
 
 ---
 

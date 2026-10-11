@@ -73,3 +73,35 @@ def test_clean_listing_invalid():
     # raw listing source_property_id defaults to None
     with pytest.raises(ValueError):
         DataCleaner.clean_listing(raw)
+
+def test_pipeline_processing_result():
+    from unittest.mock import MagicMock
+    from app.processing.pipeline import ProcessingPipeline, ProcessingResult
+    
+    repo = MagicMock()
+    pipeline = ProcessingPipeline(repo)
+    
+    valid_record = {
+        "scrape_run_id": "run_1",
+        "source": "Zillow",
+        "listing_url": "http://zillow.com/1",
+        "source_property_id": "100",
+        "price_raw": "$500,000"
+    }
+    invalid_record = {
+        "scrape_run_id": "run_1",
+        "source": "Zillow",
+        "listing_url": "http://zillow.com/2",
+        # Missing source_property_id
+    }
+    
+    result = pipeline.process_raw_listings([valid_record, invalid_record])
+    
+    assert isinstance(result, ProcessingResult)
+    assert result.total_raw == 2
+    assert result.processed_count == 1
+    assert result.failed_count == 1
+    assert len(result.invalid_records) == 1
+    assert result.is_success is False
+    assert repo.upsert_property.call_count == 1
+    assert repo.add_observation.call_count == 1

@@ -2,8 +2,10 @@ import streamlit as st
 import os
 import pandas as pd
 import traceback
+from datetime import datetime
 
 from app.config import settings
+from app.logger import logger
 from main import setup_db, run_scraper, run_pipeline
 from app.analysis.engine import AnalysisEngine
 from app.analysis.exporter import DataExporter
@@ -32,7 +34,10 @@ def generate_exports(engine: AnalysisEngine):
 def fmt_price(v) -> str:
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return "N/A"
-    return f"${float(v):,.0f}"
+    val = float(v)
+    if val < 0:
+        return f"-${abs(val):,.0f}"
+    return f"${val:,.0f}"
 
 
 def fmt_sqft(v) -> str:
@@ -101,9 +106,14 @@ def build_price_history_view(engine: AnalysisEngine) -> pd.DataFrame:
     for col in ["current_price", "previous_price", "total_change", "highest_price", "lowest_price"]:
         if col in hist.columns:
             hist[col] = hist[col].apply(fmt_price)
+
+    # If only 1 observation exists, display 'Insufficient History' rather than 0%
     if "percentage_change" in hist.columns:
-        hist["percentage_change"] = hist["percentage_change"].apply(
-            lambda x: f"{x:+.1f}%" if pd.notnull(x) else "N/A"
+        hist["percentage_change"] = hist.apply(
+            lambda row: f"{row['percentage_change']:+.1f}%"
+            if pd.notnull(row.get("percentage_change")) and row.get("price_changes", 0) > 0
+            else "Insufficient History",
+            axis=1,
         )
 
     col_rename = {
@@ -111,7 +121,7 @@ def build_price_history_view(engine: AnalysisEngine) -> pd.DataFrame:
         "current_price": "Current Price", "previous_price": "Prev Price",
         "total_change": "Total Change", "percentage_change": "% Change",
         "highest_price": "Peak Price", "lowest_price": "Low Price",
-        "price_changes": "# Observations", "first_observed": "First Seen",
+        "price_changes": "Price Changes", "first_observed": "First Seen",
         "latest_observed": "Last Seen",
     }
     hist = hist.rename(columns={k: v for k, v in col_rename.items() if k in hist.columns})
@@ -143,8 +153,11 @@ def render_sidebar() -> tuple:
     location = st.sidebar.text_input("Location", value="Seattle, WA",
                                       help="e.g. 'Austin, TX' or 'Miami, FL'")
     max_listings = st.sidebar.number_input("Max Listings", min_value=1, max_value=200, value=10, step=1)
-    headless = st.sidebar.checkbox("Headless Browser (Hidden)", value=False,
-                                    help="Uncheck to see the browser (recommended — Zillow blocks headless mode)")
+    headless = st.sidebar.checkbox(
+        "Headless Browser (Hidden)", 
+        value=False,
+        help="Run browser in background. Uncheck to display browser window for visual debugging and observing portal navigation."
+    )
     run = st.sidebar.button("▶ Run Scraper", type="primary", use_container_width=True)
 
     st.sidebar.divider()
@@ -172,30 +185,89 @@ def main():
 
     location, max_listings, headless, run = render_sidebar()
 
+    # Show preserved notifications across rerun
+    if "scrape_notification" in st.session_state:
+        notif = st.session_state.pop("scrape_notification")
+        level = notif.get("level", "info")
+        msg = notif.get("message", "")
+        details = notif.get("details")
+
+        if level == "success":
+            st.sidebar.success(f"✅ {msg}")
+        elif level == "warning":
+            st.sidebar.warning(f"⚠️ {msg}")
+        elif level == "error":
+            st.sidebar.error(f"❌ {msg}")
+        else:
+            st.sidebar.info(msg)
+
+        if details:
+            with st.sidebar.expander("Validation & Processing Notes"):
+                st.text(details)
+
     if run:
         if not location.strip():
             st.sidebar.error("Please enter a valid location.")
         else:
-            with st.spinner(f"Scraping '{location}'…  This launches a browser window."):
+            with st.spinner(f"Scraping '{location}'…  Please wait."):
+                session = None
                 try:
                     session = setup_db(settings.db_path)
                     raw_data = run_scraper(location=location, max_listings=max_listings, headless=headless)
                     if raw_data:
-                        run_pipeline(raw_data, session)
-                        st.sidebar.success(f"✅ Scraped & saved {len(raw_data)} listings!")
+                        result = run_pipeline(raw_data, session)
+
+                        # Cleanly close session and dispose connection pool
+                        bind_engine = session.get_bind()
+                        session.close()
+                        if bind_engine:
+                            bind_engine.dispose()
+                        session = None
+
+                        # Clear Streamlit cached engine resource
                         st.cache_resource.clear()
+
+                        # Automatically generate fresh export packages for the updated data
+                        fresh_engine = load_engine()
+                        if fresh_engine:
+                            try:
+                                generate_exports(fresh_engine)
+                            except Exception as exp_err:
+                                logger.warning(f"Could not auto-generate exports: {exp_err}")
+
+                        # Store structured result in session_state to survive rerun
+                        if result.failed_count == 0:
+                            st.session_state["scrape_notification"] = {
+                                "level": "success",
+                                "message": f"Collected {result.total_raw} raw listings; all {result.processed_count} verified & saved.",
+                                "details": None,
+                            }
+                        else:
+                            details_text = "\n".join([f"• {r.get('error')}" for r in result.invalid_records[:10]])
+                            if len(result.invalid_records) > 10:
+                                details_text += f"\n... and {len(result.invalid_records) - 10} more."
+                            st.session_state["scrape_notification"] = {
+                                "level": "warning",
+                                "message": f"Collected {result.total_raw} raw listings: {result.processed_count} saved, {result.failed_count} skipped/failed validation.",
+                                "details": details_text,
+                            }
                         st.rerun()
                     else:
                         st.sidebar.warning(
-                            "⚠️ No listings returned. Zillow may be blocking access. "
-                            "Make sure 'Headless Browser' is **unchecked** and try again."
+                            "⚠️ No listings returned. The portal may be restricting access, requiring rate limit pacing, or presenting a verification challenge. "
+                            "You can enable visible browser mode to inspect the page visually, or try again later."
                         )
                 except Exception as e:
-                    st.sidebar.error(f"❌ Error: {e}")
-                    st.sidebar.code(traceback.format_exc(), language="python")
+                    logger.error(f"Error during scrape execution: {e}\n{traceback.format_exc()}")
+                    st.sidebar.error(f"❌ Scraper error: {str(e)}")
+                    with st.sidebar.expander("Diagnostic Traceback"):
+                        st.code(traceback.format_exc(), language="python")
                 finally:
-                    if "session" in locals():
+                    if session:
+                        bind_engine = session.get_bind()
                         session.close()
+                        if bind_engine:
+                            bind_engine.dispose()
 
     # ── Load data ────────────────────────────────────────────────────────────
     engine = load_engine()
@@ -273,16 +345,19 @@ def main():
             else:
                 st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-        # Price distribution chart
-        if not engine.df_observations.empty and "price" in engine.df_observations.columns:
-            prices = engine.df_observations["price"].dropna()
+        # Price distribution chart (using latest observation per property)
+        current_df = engine.compare_properties()
+        if not current_df.empty and "price" in current_df.columns:
+            prices = current_df["price"].dropna()
             if not prices.empty:
-                st.subheader("Price Distribution")
+                st.subheader("Price Distribution (Current Market)")
                 n_bins = min(15, max(3, len(prices.unique())))
                 try:
                     counts = pd.cut(prices, bins=n_bins).value_counts().sort_index()
-                    chart_df = pd.DataFrame({"Count": counts.values},
-                                            index=[f"${int(b.left):,}–${int(b.right):,}" for b in counts.index])
+                    chart_df = pd.DataFrame(
+                        {"Count": counts.values},
+                        index=[f"${int(b.left):,}–${int(b.right):,}" for b in counts.index],
+                    )
                     st.bar_chart(chart_df)
                 except Exception:
                     st.bar_chart(prices.value_counts().sort_index().rename("Count"))
@@ -317,9 +392,11 @@ def main():
             st.info("No price history available. More data will accumulate as you run the scraper multiple times for the same location.")
         else:
             st.subheader("Price Changes per Property")
-            # Highlight properties with price drops
             if "% Change" in hist_view.columns:
-                st.caption("Properties with a negative % change have had their price reduced since first observed.")
+                st.caption(
+                    "Properties with a negative % change have had their price reduced since first observed. "
+                    "Properties observed only once show 'Insufficient History'."
+                )
             st.dataframe(hist_view, use_container_width=True, hide_index=True)
 
         st.subheader("Status Changes")
@@ -332,53 +409,91 @@ def main():
     # ── Tab 4: Downloads ──────────────────────────────────────────────────────
     with tab4:
         st.subheader("Export Data")
+        st.write("Download formatted market intelligence reports and datasets.")
 
-        # Re-generate exports fresh on tab visit
-        try:
-            generate_exports(engine)
-        except Exception as e:
-            st.warning(f"Could not refresh exports: {e}")
+        excel_path = "data/exports/market_report.xlsx"
+        props_path = "data/exports/properties.csv"
+        obs_path = "data/exports/observations.csv"
 
-        st.write("Download the latest data from your local database.")
+        # Explicit action to regenerate reports without running on every rerun
+        col_gen, col_info = st.columns([1, 2])
+        with col_gen:
+            if st.button("🔄 Generate / Refresh Reports", type="secondary", use_container_width=True):
+                with st.spinner("Generating fresh reports..."):
+                    try:
+                        generate_exports(engine)
+                        st.success("Reports generated successfully!")
+                    except Exception as e:
+                        st.error(f"Error generating reports: {e}")
+
+        # Check export status and timestamp
+        if os.path.exists(excel_path):
+            file_mtime = datetime.fromtimestamp(os.path.getmtime(excel_path))
+            st.caption(f"📁 Reports last generated: **{file_mtime.strftime('%b %d, %Y at %H:%M:%S')}**")
+
+            # Check if database has newer updates than the exported files
+            if not engine.df_properties.empty and "last_updated_at" in engine.df_properties.columns:
+                last_db_time = pd.to_datetime(engine.df_properties["last_updated_at"].max())
+                if hasattr(last_db_time, "tz") and last_db_time.tz:
+                    last_db_time = last_db_time.tz_localize(None)
+                if last_db_time > file_mtime:
+                    st.warning(
+                        "⚠️ Database has newer listings than the current report files. "
+                        "Click '🔄 Generate / Refresh Reports' to update your downloads."
+                    )
+        else:
+            st.info("ℹ️ Reports have not been generated yet. Click 'Generate / Refresh Reports' above to create them.")
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            try:
-                with open("data/exports/market_report.xlsx", "rb") as f:
-                    st.download_button(
-                        "📊 Excel Market Report", f,
-                        file_name="market_report.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
+            if os.path.exists(excel_path):
+                with open(excel_path, "rb") as f:
+                    file_bytes = f.read()
+                st.download_button(
+                    "📊 Excel Market Report",
+                    data=file_bytes,
+                    file_name="market_report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
                 st.caption("Full multi-sheet report with all data.")
-            except FileNotFoundError:
-                st.warning("Excel report not available yet.")
+            else:
+                st.button("📊 Excel Market Report", disabled=True, use_container_width=True)
+                st.caption("Generate reports to enable download.")
 
         with col2:
-            try:
-                with open("data/exports/properties.csv", "rb") as f:
-                    st.download_button(
-                        "🏘️ Properties CSV", f,
-                        file_name="properties.csv", mime="text/csv",
-                        use_container_width=True,
-                    )
+            if os.path.exists(props_path):
+                with open(props_path, "rb") as f:
+                    file_bytes = f.read()
+                st.download_button(
+                    "🏘️ Properties CSV",
+                    data=file_bytes,
+                    file_name="properties.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
                 st.caption("One row per unique property.")
-            except FileNotFoundError:
-                st.info("No CSV yet.")
+            else:
+                st.button("🏘️ Properties CSV", disabled=True, use_container_width=True)
+                st.caption("Generate reports to enable download.")
 
         with col3:
-            try:
-                with open("data/exports/observations.csv", "rb") as f:
-                    st.download_button(
-                        "📋 Observations CSV", f,
-                        file_name="observations.csv", mime="text/csv",
-                        use_container_width=True,
-                    )
+            if os.path.exists(obs_path):
+                with open(obs_path, "rb") as f:
+                    file_bytes = f.read()
+                st.download_button(
+                    "📋 Observations CSV",
+                    data=file_bytes,
+                    file_name="observations.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
                 st.caption("Full price/status history per property.")
-            except FileNotFoundError:
-                st.info("No CSV yet.")
+            else:
+                st.button("📋 Observations CSV", disabled=True, use_container_width=True)
+                st.caption("Generate reports to enable download.")
 
 
 if __name__ == "__main__":
     main()
+
